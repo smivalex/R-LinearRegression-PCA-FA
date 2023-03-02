@@ -1,0 +1,466 @@
+---
+title: "REG+PCA+FA"
+author: "Ivan"
+date: "2022-11-09"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(matrixStats)
+library(ggplot2)
+library(GGally)
+library(ppcor)
+library(Hmisc)
+library(corrplot)
+library(nortest)
+library(stats)
+library(moments)
+```
+
+## 1.1 Выбор данных
+
+Выбран датасет измерений пульса людей до и после физической нагрузки.https://vincentarelbundock.github.io/Rdatasets/datasets.html Pulse.cv
+
+## 1.2 Чтение данных
+
+```{r}
+df <- read.csv(file = "pulse.csv", header = TRUE, as.is = FALSE)
+head(df)
+```
+Подготовка данных:
+```{r}
+df <- df[-1] #удаляем порядковый столбец
+df$Smoke <- ifelse(df$Smoke==1, TRUE, FALSE) #True - курящие
+df$Sex <- ifelse(df$Sex==1, TRUE, FALSE) #True - женщины
+df$Hgt <- df$Hgt * 2.54 #Рост в сантиметры
+df$Wgt <- df$Wgt * 0.45 #Вес в килограммы
+head(df)
+```
+Просматривание пределов данных:
+```{r}
+summary(df)
+```
+## 1.3 Описание данных
+
+Датасет содержит 232 индивида и 7 признаков:
+
+Active - пульс после физической нагрузки
+
+Rest - пульс в состояние покоя
+
+Smoke - курящий или некурящий человек
+
+Sex - пол
+
+Exercise - сколько упражнений выполнил испытуемый
+
+Hgt - рост
+
+Wgt - вес
+
+## 1.4 Определение типов признаков
+```{r}
+df %>% dplyr::summarize(dplyr::across(Active:Wgt, function(x) max(table(x))))
+```
+Из мод и из смысла данных:
+
+Active - количественный непрерывный признак
+
+Rest - количественный непрерывный признак
+
+Smoke - качественный признак
+
+Sex - качественный признак
+
+Exercise - количественный дискретный признак
+
+Hgt - количественный дискретный признак
+
+Wgt - количественный непрерывный признак
+
+## 1.5 Порядковые признаки
+
+В данном датасете таких данных нет
+
+## 1.6 Pairs
+```{r}
+num_col <- c("Active","Rest","Hgt", "Wgt")
+f <- ggpairs(na.omit(df), columns = num_col,  diag = list(diag = list(continuous = "densityDiag", discrete = "blankDiag", na = "blankDiag")), cardinality_threshold=NULL)
+print(f)
+```
+## 1.7 Логарифмирование
+
+Все распределения похожи на нормальныt - логарифмировать нет необходимости
+
+## 1.8-10 Outliers, matrix plot для подгрупп, объяснение неоднородностей
+
+Для поиска выбросов построим графики для отдельных групп:
+
+Мужчины и женщины:
+```{r}
+f <- ggpairs(df, columns = num_col,  diag = list(diag = list(continuous = "densityDiag", discrete = "blankDiag", na = "blankDiag")), cardinality_threshold=NULL, mapping = aes(color = df$Sex, alpha = 0.8))
+print(f)
+```
+
+Курящие и некурящие:
+```{r}
+f <- ggpairs(df, columns = num_col,  diag = list(diag = list(continuous = "densityDiag", discrete = "blankDiag", na = "blankDiag")), cardinality_threshold=NULL, mapping = aes(color = df$Smoke, alpha = 0.8))
+print(f)
+```
+
+Удаляем выбросы:
+```{r}
+correctdf <- df
+correctdf[7,] <- NA 
+correctdf[26,] <- NA 
+correctdf[48,] <- NA 
+correctdf[180,] <- NA 
+correctdf[67,] <- NA 
+correctdf[140,] <- NA
+correctdf[162,] <- NA
+correctdf[176,] <- NA
+correctdf[74,] <- NA 
+correctdf[183,] <- NA
+correctdf[198,] <- NA
+correctdf[179,] <- NA 
+correctdf[217,] <- NA 
+correctdf <- na.omit(correctdf)
+
+ggpairs(correctdf, columns = num_col,  diag = list(diag = list(continuous = "densityDiag", discrete = "blankDiag", na = "blankDiag")), cardinality_threshold=NULL, mapping = aes(color = correctdf$Smoke, alpha = 0.8))
+ggpairs(correctdf, columns = num_col,  diag = list(diag = list(continuous = "densityDiag", discrete = "blankDiag", na = "blankDiag")), cardinality_threshold=NULL, mapping = aes(color = correctdf$Sex, alpha = 0.8))
+```
+
+Видим ленейную зависимость между весом и ростом и между пульсом до и после физической нагрузки
+
+Видим неоднородности между остальными признаками попарно - объясняются половым фактором
+
+## 1.11 Descriptive statistics
+```{r}
+summary(correctdf)
+dplyr::summarize(correctdf, across(num_col, list(kurtosis = kurtosis, skewness = skewness)))
+```
+## 2.1-2 Выбор категорирующей переменной и Boxplot
+
+Избавимся от курящих индивидов:
+```{r}
+noSmokedf <- correctdf %>% filter(Smoke == FALSE)
+
+useDf <- noSmokedf[,c("Active", "Rest", "Wgt", "Hgt", "Sex")]
+
+
+
+```
+Группировка по полу:
+```{r}
+ggplot(useDf, aes(x = useDf$Sex, y = useDf$Active, fill = useDf$Sex)) + geom_boxplot()
+```
+
+```{r}
+ggplot(useDf, aes(x = useDf$Sex, y = useDf$Rest, fill = useDf$Sex)) + geom_boxplot()
+```
+
+
+
+## 2.3 Проверка нормальности
+```{r}
+QQplot <- function(data, column) ggplot(data, aes(sample = data[, column])) + stat_qq() + stat_qq_line(colour = "red")
+
+lapply(names(useDf[, num_col]), function(x) QQplot(noSmokedf, x))
+```
+
+Распределния всех факторов близки к нормальному вблизи средних значений.
+
+## 2.4 t-test для обнаружения разницы в среднем
+```{r}
+t.test(Active ~ Sex, data = useDf)
+t.test(Rest ~ Sex, data = useDf)
+t.test(Hgt ~ Sex, data = useDf)
+t.test(Wgt ~ Sex, data = useDf)
+```
+## 2.5 Критерий Колмогорова-Смирнова для сравнения по сдвигу
+```{r}
+ks.test(Active ~ Sex, data = useDf)
+ks.test(Rest ~ Sex, data = useDf)
+ks.test(Hgt ~ Sex, data = useDf)
+ks.test(Wgt ~ Sex, data = useDf)
+```
+Вывод: попадая в доверительнй интервал 0.95 все признаки особо не сдвинуты при разделении на подгруппы по полу
+
+## 3.1 Корреляционный анализ
+
+Стандартизуем и нормируем признаки:
+
+
+
+```{r}
+m = cor(useDf)
+corrplot(m, method = 'color')
+```
+
+Корреляционные коэффициенты Пирсона:
+```{r}
+rcorr(as.matrix(useDf), type="pearson")
+```
+Корреляционные коэффициенты Спирмена:
+```{r}
+rcorr(as.matrix(useDf), type="spearman")
+```
+## 3.2 Регрессия
+```{r}
+library(lm.beta)
+lm.df.oecd <- lm.beta(lm(data = useDf, Active ~  Rest + Hgt + Wgt + Sex ))
+summary(lm.df.oecd)
+```
+Вывод: R-квадрат всего 2 %, значение критерия Фишера говорит, что модель значима. p-value значит, что с вероятностью только 0.09 все коэффициенты нулевые.
+
+Улучшим исходную модель по AIC:
+```{r}
+lm.df.oecd.full <- lm.beta(lm(data = useDf, Active ~  Rest + Hgt + Wgt + Sex ))
+stepAIC(lm.df.oecd.full, direction = "backward")
+```
+```{r}
+lm.df.oecd <- lm.beta(lm(data = useDf, Active ~  Rest + Wgt + Sex ))
+summary(lm.df.oecd)
+```
+
+```{r}
+PulsePred <- data.frame(Rest = 60, Hgt = 170, Wgt = 55, Sex = TRUE )
+predict.lm(lm.df.oecd, PulsePred, interval = "prediction")
+```
+```{r}
+predict.lm(lm.df.oecd, PulsePred, interval = "confidence")
+```
+
+## 4. АГК
+
+Для анализа главных компанент, возьмем только индивидов с женским полом:
+
+```{r}
+useDf <- useDf %>% filter(Sex == TRUE)
+
+PCADf <- useDf[,c("Active", "Rest", "Wgt", "Hgt")]
+```
+
+Воспользуемся пакетами FactoMineR и factoextra для проведения и демонстрации результатов АГК:
+
+```{r}
+library("FactoMineR")
+result.pca = PCA(PCADf, scale.unit=TRUE, ncp=4, graph=F)
+```
+
+```{r}
+result.pca$eig
+```
+
+eigenvalue - значения $\lambda_i$ (дисперсии) собственные числа для $i-$той ГК
+
+percentage of variance (дольная дисперсия) - сколько процентов данных описывается $i-$той ГК
+
+cumulative percentage of variance (накопительная дисперсия) - сколько процентов данных описывается текщими ГК
+
+Построим график "каменистой осыпи" для полученных ГК (иллюстрация полученных на предыдущем шаге значений, "каменистая осыпь" используется для определения числа необходимых ГК, но в случае с 4 ГК необходимо использовать другой метод - например, использовать только те ГК, которые мы можем как-то интерпретировать)
+
+```{r}
+library("factoextra")
+fviz_eig(result.pca, addlabels = TRUE)
+```
+
+Вывод собственных векторов $U_i$:
+  
+```{r}
+result.pca$svd$V
+```
+
+Так как $Z_i=\textbf{X}U_i$, значит $Z_i$ линейная комбинация признаков, с коэффициентами, взятыми из $U_i$. Значит, ГК - это ортоганальные между собой линейные комбинации исходных признаков, так как $U_i$ - ортонормированный базис столбцов (признаков).
+
+На основе этого интерпретируем первые 2 ГК:
+
+1 - Разница между средним пульсом и комплекцией тела
+
+2 - Суммарный вклад комплекции человека и его пульса в покое и после нагрузки
+
+Вывод координат индивидов $z_{ij}=<x_i,U_j>_1$ - $j$-ая координата $i$-того индивида в базисе новых признаков. При $j$ принимающим значения $1$ и $2$, получаем координаты индивидов в базисе 1 и 2 ГК: 
+
+```{r}
+result.ind <- get_pca_ind(result.pca)
+head(result.ind$coord)
+```
+
+Вывод координат признаков $f_{ij}=<X_i,V_j>_2$ - $j$-ая координата $i$-того признака в базисе новых признаков. При $j$ принимающим значения $1$ и $2$, получаем координаты старых признаков в базисе 1 и 2 ГК:  
+
+```{r}
+var <- get_pca_var(result.pca)
+var$coord
+```
+
+Выведем график, отражающий то, как хорошо исходный признак описывается первыми двумя ГК:
+
+```{r}
+fviz_pca_var(result.pca)
+```
+
+Коорданты векторов признаков соотвествуют $f_{ij}=<X_i,V_j>_2$, где $j$-ая координата $i$-того признака в базисе новых признаков
+
+Интерпритировать это можно так:
+
+Так как АГК построенно по корреляционной матрице (данные центрированы и нормированы), то косинус угла наклона между вектором изначального признака и плоскостью первых двух ГК можно считать корреляцией (формулы совпадут). 
+
+На приведенном выше графике длина вектора $i$-того изначальным признака соотвествует значению множественной корреляции $i$-того изначального признака с первыми двумя ГК, координаты $(x,y)$ векторов признаков на данном графике соотвествуют корреляциям с 1 и 2 ГК соответственно.
+
+Для илюстрации того, как изначальные признаки описываются ГК выведем матрицу соответсвия косинуса угла в квадрате между $i$-тым изначальным признаком и $i$-той ГК (по сути выводим корреляции).
+
+```{r}
+library("corrplot")
+corrplot(var$cos2, is.corr=FALSE)
+```
+
+Построим BiPlot из проекций индивидов в координаты 1 и 2 ГК (Ось абсцисс - первая ГК ($Z_1$), Ось ординат - вторая ГК ($Z_2$))
+
+Чтобы посчитать, как хорошо индивид описывается плоскостью, образованной первыми двумя ГК, необходимо посчитать косинус угла между плоскостью и индивидом. Очевидно, что индивиды, перпендикулярные плоскости, плохо описываются этой плоскость. Для индивидов, перпендикулярных плоскость косинус угла будет 0. Косинус берется в квадрае, чтобы сравнивать положительные значения
+
+Построим график, показывающий проекции индивидов на плоскость первых двух ГК ($z_{ij}=<x_i,U_j>_1$ - $j$-ая координата $i$-того индивида в базисе новых признаков. При $j$ принимающим значения $1$ и $2$, получаем координаты индивидов в базисе 1 и 2 ГК):
+
+```{r}
+fviz_pca_ind(result.pca,
+             col.ind = "cos2", 
+             gradient.cols = c("#0000FF", "#DAA520", "#FF0000"),
+             repel = TRUE    
+             )
+```
+
+Соотвественно, индивиды, отмеченные синим цветом, хуже описываются первыми двумя ГК, чем индивиды, отмеченные красным цветом.
+
+Далее построим график проекций индивидов и проекций изначальных признаков на плоскость первых двух ГК(Ось абсцисс - первая ГК ($Z_1$), Ось ординат - вторая ГК ($Z_2$)
+
+$z_{ij}=<x_i,U_j>_1$ - $j$-ая координата $i$-того индивида в базисе новых признаков. При $j$ принимающим значения $1$ и $2$, получаем координаты индивидов в базисе 1 и 2 ГК
+
+$p_{ij}  =  e_i  \cdot ( U_1^j ... U_p^j)^T$ - $j$-ая координата $i$-того старого признака соответственно ($e_i$ - вектор строка из нулей, с единицей на позиции, соотвествующей $i$)
+
+```{r}
+fviz_pca_biplot(result.pca, repel = TRUE,
+                col.var = "#B22222", 
+                col.ind = "#008000"
+                )
+```
+
+Разберемся с характеристиками аутлаеров (принимаем во внимание, что признаки центрированы и стандартизованы)(смысл 1 ГК: справа от 0 - большое среднее значение пульса - комплеция)(смысл 2 ГК: сверху от 0: большая комплекция человека + учет среднего пульса): 
+
+53 индивид - имеет большое среднее значение пульса (по 1 ГК), имеет комплецию ниже среднего (по 2 ГК)
+
+11 индивид - имеет среднее значение пульса ниже, чем среднее по выборки (по 1 ГК), имеет большую комплецию (по 2 ГК)
+
+## 5. ФА
+
+Спевра еще раз вглянем на корреляционную матрицу:
+
+```{r}
+m = cor(PCADf)
+corrplot(m, method = 'color')
+```
+
+Видим, что сильно коррелирую друг с другом две пары признаков: пульс до и после физической нагрузки, и рост с весом.
+
+Проведем тест Кайзера-Мейера-Олкина:
+
+```{r}
+library(psych)
+library(reshape2)
+KMO(m)
+```
+
+Показатель MSA - показатель адекватности всей выборки для факторого анализа
+
+Показатели MSAi - показатели адекватности для каждого признака для факторного анализа
+
+Теперь проведем тест сферичности Бартлета (проверяется гипотеза о том, что корреляционная матрицы единичная):
+
+```{r}
+cortest.bartlett(PCADf)
+```
+
+Здесь:
+ 
+chisq - асимтотический Хи-квадрат
+
+df - количество степеней свободы
+
+Видим, что нулевая гипотеза отвергается.
+
+Для определения числа факторов построим Scree plot:
+
+```{r}
+fafitfree <- fa(PCADf, nfactors = ncol(PCADf), rotate = "none")
+n_factors <- length(fafitfree$e.values)
+scree <- data.frame(
+  Factor_n = as.factor(1:n_factors),
+  Eigenvalue = fafitfree$e.values)
+ggplot(scree, aes(x = Factor_n, y = Eigenvalue, group = 1)) +
+  geom_point() + geom_line() +
+  xlab("Number of factors") +
+  ylab("Initial eigenvalue") +
+  labs(title = "Scree plot")
+```
+
+Видно, что хорошо определяются два фактора.
+
+Построим также Scree plot с учетом нормально распределенных ошибок для наш
+
+```{r}
+parallel <- fa.parallel(PCADf)
+```
+
+Смотрим на график с треугольниками (факторный анализ) - также определяется 2 фактора.
+
+Теперь проведем факторный анализ по корреляционной матрице (по умолчанию):
+
+```{r}
+fa.varimax <- fa(r = PCADf,
+  nfactors = 2,
+  fm = "minres",
+  max.iter = 100,
+  rotate = "varimax")
+print(fa.varimax)
+```
+
+MR1 и MR2 - факторные нагрузки, видим, что первый фактор состоит в основном из признаков Active и Rest, а второй - из признаков Wgt и Hgt. 
+
+Посмотрим на даиграмму, иллюстрирующую то, из чего состоят найденные факторы (иллюстрация столбцов MR1 и MR2):
+
+```{r}
+fa.diagram(fa.varimax)
+```
+
+Видим, что первый скрытый фактор - определяет пульс человека, а второй - комплекцию человека.
+
+Построим Biplots:
+
+Для случая без поворота (изначально):
+
+```{r}
+fa.none <- fa(r = PCADf,
+  nfactors = 2,
+  fm = "minres",
+  max.iter = 100,
+  rotate = "none")
+
+x <- list()
+x$scores <- fa.none$scores
+x$loadings <- fa.none$loadings
+class(x) <- c('psych','fa')
+biplot(x)
+```
+
+С поворотом:
+
+```{r}
+x <- list()
+x$scores <- fa.varimax$scores
+x$loadings <- fa.varimax$loadings
+class(x) <- c('psych','fa')
+biplot(x)
+```
